@@ -1,0 +1,803 @@
+ <html>
+ 	<head>
+ 		<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.4.1/jquery.min.js"></script>
+ 	</head>
+    <script type="text/javascript">
+    var canvas, ctx, flag = false,
+        prevX = 0,
+        currX = 0,
+        prevY = 0,
+        currY = 0,
+        dot_flag = false;
+
+    strokes = [];
+    originalStrokes = [];
+
+    strokeGroups = [];
+
+    var x = "black",
+        y = 2;
+    
+    function init() {
+        canvas = document.getElementById('can');
+        ctx = canvas.getContext("2d");
+        w = canvas.width;
+        h = canvas.height;
+    
+        canvas.addEventListener("mousemove", function (e) {
+            findxy('move', e)
+        }, false);
+        canvas.addEventListener("mousedown", function (e) {
+            findxy('down', e)
+        }, false);
+        canvas.addEventListener("mouseup", function (e) {
+            findxy('up', e)
+        }, false);
+        canvas.addEventListener("mouseout", function (e) {
+            findxy('out', e)
+        }, false);
+    }
+    
+    function color(obj) {
+    	y = 2;
+    }
+    
+    function draw() {
+
+    	// console.log('drawing' + prevX + ',' + prevY + ' to ' + currX + ',' + currY);
+
+        ctx.beginPath();
+        ctx.moveTo(prevX, prevY);
+        ctx.lineTo(currX, currY);
+        ctx.strokeStyle = x;
+        ctx.lineWidth = y;
+        ctx.stroke();
+        ctx.closePath();
+    }
+    
+    function erase() {
+        var m = confirm("Want to clear");
+        if (m) {
+            ctx.clearRect(0, 0, w, h);
+            ctx2.clearRect(0, 0, w, h);
+            document.getElementById("canvasimg").style.display = "none";
+            strokes = [];
+            strokeGroups = [];
+        }
+    }
+    
+    function save() {
+        var isText = confirm('Text?');
+
+        var data = {};
+
+        $(strokeGroups).each(function(k, group) {
+        	data[k] = {
+        		'alphabets': group.alphabetProbabilities.alphabets,
+        		'entropyRate': group.entropyRate,
+        		'diagonalIntersections': group.diagonalIntersections,
+        		'intersections': group.intersections,
+        		'totalProbability': group.totalProbability,
+        		'totalPoints': group.totalPoints,
+        		'density': group.density,
+        		'isText': isText,
+        	};
+        });
+
+        var group = strokeGroups[0];
+
+        $.ajax({
+    		url: 'http://127.0.0.1/write_csv.php',
+    		method: 'post',
+    		data: data,
+    		success: function(response) {
+    			if (response !== 'saved') {
+    				alert('data not saved!');
+    			}
+    		}
+    	});
+    }
+    
+    function findxy(res, e) {
+
+        if (res == 'down') {
+            prevX = currX;
+            prevY = currY;
+            currX = e.clientX - canvas.offsetLeft;
+            currY = e.clientY - canvas.offsetTop;
+    
+            flag = true;
+            dot_flag = true;
+            if (dot_flag) {
+                ctx.beginPath();
+                ctx.fillStyle = x;
+                ctx.fillRect(currX, currY, 2, 2);
+                ctx.closePath();
+                dot_flag = false;
+
+                newStroke();
+            }
+        }
+
+        if (res == 'up') {
+        	saveStroke();
+        	flag = false;
+        }
+        
+        if (res == 'out') {
+        	flag = false;
+        }
+
+        if (res == 'move') {
+            if (flag) {
+                prevX = currX;
+                prevY = currY;
+                currX = e.clientX - canvas.offsetLeft;
+                currY = e.clientY - canvas.offsetTop;
+                updateStroke();
+                draw();
+            }
+        }
+    }
+
+    function newStroke()
+    {
+    	var stroke = new Stroke();
+
+    	stroke.id = strokes.length;
+
+    	stroke.points.push([currX, currY]);
+
+    	stroke.time.in = Date.now();
+    	
+    	strokes.push(stroke); 
+    }
+
+    function updateStroke() 
+    {
+    	var thisStroke = strokes[strokes.length - 1];
+
+    	var strokePts = getPointsBetweenTwoPoints([prevX, prevY], [currX, currY]);
+
+    	for (i in strokePts)
+    	{
+    		thisStroke.points.push([strokePts[i][0], strokePts[i][1]]);
+    	}
+
+    	thisStroke.points.push([currX, currY]);
+    }
+
+    function saveStroke()
+    {
+    	var thisStroke = strokes[strokes.length - 1];
+
+    	thisStroke.points.push([currX, currY]);
+    	thisStroke.time.out = Date.now();
+    }
+
+    function Stroke() {
+	    this.id = '';
+	    this.points = [];
+	    this.time = {in: '', out: ''};
+	    this.group = null;
+
+	    this.hasGroup = function(strokeId) {
+	    	var hasGroup = false;
+	    	var thisGroupId = null;
+
+	    	$(strokeGroups).each(function(k, group) {
+	   //  		console.log(group);
+				// console.log('group.includes('+strokeId+'): ' + group.includes(strokeId));
+	    		if (group.includes(strokeId)) {
+	    			hasGroup = true;
+	    			thisGroupId = k;
+	    			return;
+	    		}
+	    	});
+
+	    	this.group = thisGroupId;
+
+	    	return hasGroup;
+	    };
+	}
+
+	function classify() {
+
+		var originalStrokes = JSON.parse(JSON.stringify( strokes ));
+
+		resampleStrokes(); resampleStrokes();
+
+		strokeGroups = [];
+		strokeGroups = generateStrokeGroups();
+
+		highlightStrokeGroups();
+		// groupStrokeGroupsByBoundingBox();
+
+		calculateEntropyAlphabet();
+
+		calculateStrokeDensity();
+
+		calculateEntropies();
+
+		calculateIntersections();
+
+		calculateDiagonalIntersections();
+
+		classifyStrokeGroups(originalStrokes);
+
+		// console.log(strokeGroups);
+	}
+
+	function classifyStrokeGroups(originalStrokes) 
+	{
+		console.log('Starting classification...')
+		$("#classifyingText").show();
+
+		canvasPostProcessing = document.getElementById('postProcessingText');
+        ctxText = canvasPostProcessing.getContext("2d");
+
+        canvasPostProcessing = document.getElementById('postProcessingShapes');
+        ctxShapes = canvasPostProcessing.getContext("2d");
+
+		$(strokeGroups).each(function(k, group) {
+			$(group).each(function(i, strokeId) {
+
+				if (svmClassify(group) == 'shape') {
+					var context = ctxShapes;
+				} else {
+					var context = ctxText;
+				}
+
+				var stroke = originalStrokes[strokeId];
+
+				context.beginPath();
+				$(stroke.points).each(function(j, point) {
+					context.fillStyle  = 'red';
+					context.fillRect(point[0], point[1], 2, 2);
+				});
+				ctx2.closePath();
+			});
+		});
+
+		console.log('Done!')
+		$("#classifyingText").hide();
+	}
+
+	function svmClassify(strokeGroup) 
+	{
+		var type = '';
+
+		$.ajax({
+			url: 'http://127.0.0.1/classifier.php',
+			data: {'total_probability': strokeGroup.totalProbability, 'density': strokeGroup.density, 'h': strokeGroup.alphabetProbabilities.alphabets.H.probability},
+			async: false,
+			success: function(response) {
+				type = response;
+			}
+		});
+
+		console.log(type);
+		return type;
+	}
+
+	function resampleStrokes()
+	{
+		$(strokes).each(function(i, stroke) {
+			var stroke = strokes[i];
+			$(stroke.points).each(function(j, point1) {
+				if (undefined !== stroke.points[j+1] && undefined != stroke.points[j+2] && undefined != stroke.points[j+3]) {
+					strokes[i].points.splice(j, 1);
+					strokes[i].points.splice(j+2, 1);
+					strokes[i].points.splice(j+3, 1);
+				} 
+			});
+		});
+	}
+
+	function highlightStrokeGroups() {
+		canvasPostProcessing = document.getElementById('postProcessingText');
+        ctx2 = canvasPostProcessing.getContext("2d");
+        w = canvasPostProcessing.width;
+        h = canvasPostProcessing.height;
+
+		$(strokeGroups).each(function(k, group) {
+			var edges = {x: [null, null], y: [null, null]};
+
+			$(group).each(function(i, strokeId) {
+				stroke = strokes[strokeId];
+				// ctx2.beginPath();
+
+				$(stroke.points).each(function(j, point) {
+
+					// is this the extreme left point of the stroke?
+					if (point[0] <= edges.x[0] || edges.x[0] == null) {
+						edges.x[0] = point[0];
+					}	
+
+					// is this the extreme right point of the stroke?
+					if (point[0] >= edges.x[1] || edges.x[1] == null) {
+						edges.x[1] = point[0];
+					}
+
+					// is this the bottom most point of the stroke?
+					if (point[1] <= edges.y[0] || edges.y[0] == null) {
+						edges.y[0] = point[1];
+					}
+
+					// is this the top most point of the stroke?
+					if (point[1] >= edges.y[1] || edges.y[1] == null) {
+						edges.y[1] = point[1];
+					}
+
+					ctx2.fillStyle  = 'red';
+					// ctx.fillStyle  = 'yellow';
+					// ctx2.fillRect(point[0], point[1], 2, 2);
+					// ctx.fillRect(point[0], point[1], 2, 2);
+					// ctx2.moveTo(point[0], point[1]);
+					// ctx2.lineTo(point[0] + 1, point[1] + 1);
+
+			  //       ctx2.strokeStyle = 'blue';
+			  //       ctx2.lineWidth = y;
+			  //       ctx2.stroke();
+				});
+
+		        // ctx.moveTo(stroke.points[0][0], stroke.points[0][1]);
+		        // ctx.lineTo(stroke.points[stroke.points.length - 1][0], stroke.points[stroke.points.length - 1][1]);
+		        // ctx.strokeStyle = 'red';
+		        // ctx.lineWidth = y;
+		        ctx2.closePath();
+			});
+
+			strokeGroups[k]['edges'] = edges;
+			strokeGroups[k]['diagonalLength'] = distanceBetweenTwoPoints([edges.x[0], edges.y[1]], [edges.x[1], edges.y[0]]);
+			strokeGroups[k]['boundingboxArea'] = rectangleArea(edges);
+			strokeGroups[k]['boundingboxDiagonal'] = rectangleDiagonal(edges);
+			strokeGroups[k]['ltrTopDiagonal'] = getDiagonalFromPoints([edges.x[0], edges.y[1]], [edges.x[1], edges.y[0]]); // \
+			strokeGroups[k]['ltrBottomDiagonal'] = getDiagonalFromPoints([edges.x[0], edges.y[0]], [edges.x[1], edges.y[1]]); // /
+
+
+			drawBoundingBox(edges, ctx);
+		});
+	}
+
+	function rectangleArea(edges) {
+		var w = distanceBetweenTwoPoints([edges.x[0], edges.y[1]], [edges.x[0], edges.y[0]]);
+		var l = distanceBetweenTwoPoints([edges.x[0], edges.y[0]], [edges.x[1], edges.y[0]]);
+
+		return w * l;
+	}
+
+	function rectangleDiagonal(edges) {
+		var w = distanceBetweenTwoPoints([edges.x[0], edges.y[1]], [edges.x[0], edges.y[0]]);
+		var l = distanceBetweenTwoPoints([edges.x[0], edges.y[0]], [edges.x[1], edges.y[0]]);
+
+		return Math.sqrt(Math.pow(w, 2) + Math.pow(l, 2));
+	}
+
+	function distanceBetweenTwoPoints(p1, p2) {
+		var a = p1[0] - p2[0];
+		var b = p1[1] - p2[1];
+
+		var c = Math.sqrt( a*a + b*b );
+
+		return c;
+	}
+
+	function getPointsBetweenTwoPoints(p1, p2)
+	{
+		var x1 = p1[0], x2 = p2[0], y1 = p1[1], y2 = p2[1];
+		var line = [];
+
+		if ((x1 - x2) == 0)
+		{
+			if (y1 > y2) {
+				for (a = y1; a >= y2; a--) {
+					line.push([x1, a]);
+				}
+			} else {
+				for (a = y1; a <= y2; a++) {
+					line.push([x1, a]);
+				}
+			}
+
+			return line;
+		}
+
+		m = (y1 - y2) / (x1-x2);
+		c = y1 - x1 * m;
+
+		if (x1 < x2) {
+			for (x = x1; x <= x2; x++)
+			{
+				var y = m*x + c;
+
+				line.push([x, parseInt(y)]);
+			}
+		} else {
+			for (x = x1; x >= x2; x--)
+			{
+				var y = m*x + c;
+
+				line.push([x, parseInt(y)]);
+			}
+		}
+		
+		return line;
+	}
+
+	function getDiagonalFromPoints(p1, p2)
+	{
+		var x1 = p1[0], x2 = p2[0], y1 = p1[1], y2 = p2[1];
+		var line = [];
+
+		var m = (y1 - y2) / (x1-x2);
+		c = y1 - x1 * m;
+
+		for (x = x1; x <= x2; x++)
+		{
+			var y = m*x + c;
+
+			line.push(x + '-' + parseInt(y));
+		}
+
+		return line;
+	}
+
+	function drawBoundingBox(edges, ctx)
+	{
+		var padding = 4;
+		var strokeStyke = 'blue';
+		var sides = {
+			horizontal: {top: {from: [], to: []}, bottom: {from: [], to: []}}, 
+			vertical: {right: {from: [], to: []}, left: {from: [], to: []}}
+		};
+
+		sides.horizontal.top.from = [edges.x[0], edges.y[1]];
+		sides.horizontal.top.to = [edges.x[1], edges.y[1]];
+
+		sides.horizontal.bottom.from = [edges.x[0], edges.y[0]];
+		sides.horizontal.bottom.to = [edges.x[1], edges.y[0]];
+
+		sides.vertical.right.from = [edges.x[1], edges.y[1]];
+		sides.vertical.right.to = [edges.x[1], edges.y[0]];
+
+		sides.vertical.left.from = [edges.x[0], edges.y[1]];
+		sides.vertical.left.to = [edges.x[0], edges.y[0]];
+
+		ctx.beginPath();
+
+		// left vertical
+        ctx.moveTo(sides.vertical.left.from[0] - padding, sides.vertical.left.from[1] + padding);
+        ctx.lineTo(sides.vertical.left.to[0] - padding, sides.vertical.left.to[1] - padding);
+        ctx.strokeStyle = strokeStyke;
+        ctx.lineWidth = y;
+        ctx.stroke();
+
+        // right vertical
+        ctx.moveTo(sides.vertical.right.from[0] + padding, sides.vertical.right.from[1] + padding);
+        ctx.lineTo(sides.vertical.right.to[0] + padding, sides.vertical.right.to[1] - padding);
+        ctx.strokeStyle = strokeStyke;
+        ctx.lineWidth = y;
+        ctx.stroke();
+
+        // top horizontal
+        ctx.moveTo(sides.horizontal.bottom.from[0] - padding, sides.horizontal.bottom.from[1] - padding);
+        ctx.lineTo(sides.horizontal.bottom.to[0] + padding, sides.horizontal.bottom.to[1] - padding);
+        ctx.strokeStyle = strokeStyke;
+        ctx.lineWidth = y;
+        ctx.stroke();
+        ctx.closePath();
+
+        // bottom horizontal
+        ctx.moveTo(sides.horizontal.top.from[0] - padding, sides.horizontal.top.from[1] + padding);
+        ctx.lineTo(sides.horizontal.top.to[0] + padding, sides.horizontal.top.to[1] + padding);
+        ctx.strokeStyle = strokeStyke;
+        ctx.lineWidth = y;
+        ctx.stroke();
+
+        ctx.strokeStyle = 'black';
+	}
+
+	function generateStrokeGroups() {
+
+		var timeThreshold = 300; //ms
+		var groups = [];
+
+		$(strokes).each(function(k, stroke) {
+			// console.log(k);
+			if (undefined != strokes[k+1]) {
+				// console.log('Comparing ' + k + ', ' + (k + 1));
+				var nextStroke = strokes[k+1];
+				var timeDifference = nextStroke.time.in - stroke.time.out;
+
+				if (timeDifference <= timeThreshold || (strokesOverlap(stroke, strokes[k+1]) && timeDifference <= timeThreshold + 400) ) {
+					if (stroke.hasGroup(k)) {
+						// console.log('created group for stroke ' + k + ' cond 1');
+						strokeGroups[stroke.group].push(k+1);
+					} else {
+						// console.log('grouped ' + k + ' and ' + (k+1) + ' together');
+						strokeGroups.push([k, k+1]);
+					}
+				} else {
+					if ( ! stroke.hasGroup(k)) {
+						// console.log('created group for stroke ' + k + ' cond 2');
+						strokeGroups.push([k]);
+					}
+				}
+			} else if ( ! stroke.hasGroup(k)) {
+				// console.log('created group for stroke ' + k + ' cond 3');
+				strokeGroups.push([k]);
+			}
+		});
+
+		return strokeGroups;
+	}
+
+	function strokesOverlap(stroke1, stroke2)
+	{
+		// return false;
+		// console.log('Checking for overlaps...');
+		// console.log(stroke1); 
+		// console.log(stroke2);
+
+		var overlap = false;
+
+		$(stroke1.points).each(function(k, point1) {
+			$(stroke2.points).each(function(i, point2) {
+
+				// var diffX = abs(point1[0] - point2[0]);
+				// var diffY = abs(point1[1] - point2[1]);
+
+				if ((point2[0] == point1[0] && point2[1] == point1[1]) || pointsInCloseProximity(point1, point2)) {
+					overlap = true;
+					return;
+				}
+			});
+		});
+
+		return overlap;
+	}
+
+	function pointsInCloseProximity(p1, p2)
+	{
+		var proximityThreshold = 3;
+
+		if (Math.abs(p1[0] - p2[0]) <= proximityThreshold && Math.abs(p1[1] - p2[1]) <= proximityThreshold)
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	function calculateEntropyAlphabet()
+	{
+		$(strokeGroups).each(function(k, group) {
+			strokeGroups[k]['entropy'] = [];
+			$(group).each(function(i, strokeId) {
+				stroke = strokes[strokeId];
+
+				$(stroke.points).each(function(j, point) {
+					currentPoint = point;
+
+					if (undefined != stroke.points[j - 1] && undefined != stroke.points[j + 1])
+					{
+						previousPoint = stroke.points[j - 1];
+						nextPoint = stroke.points[j + 1];
+
+						if ( ! equalPoints(currentPoint, previousPoint) &&  ! equalPoints(currentPoint, nextPoint) && ! equalPoints(nextPoint, previousPoint))
+						{
+							var angle = find_angle(previousPoint, nextPoint, currentPoint);
+							var entropyModelAlphabet = getEntropyModelAlphabet(angle);
+
+							strokeGroups[k]['entropy'].push(entropyModelAlphabet);
+						}
+					}
+					else
+					{
+						strokeGroups[k]['entropy'].push('X');
+					}
+				});
+			});
+		});
+	}
+
+	function equalPoints(p1 , p2) {
+		if (p1[0] == p2[0] && p1[1] == p2[1])
+		{
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Calculates the angle (in radians) between two vectors pointing outward from one center
+	 *
+	 * @param p0 first point
+	 * @param p1 second point
+	 * @param c center point
+	 */
+	function find_angle(p0,p1,c) {
+	    var p0c = Math.sqrt(Math.pow(c[0]-p0[0],2)+
+	                        Math.pow(c[1]-p0[1],2)); // p0->c (b)
+	    var p1c = Math.sqrt(Math.pow(c[0]-p1[0],2)+
+	                        Math.pow(c[1]-p1[1],2)); // p1->c (a)
+	    var p0p1 = Math.sqrt(Math.pow(p1[0]-p0[0],2)+
+	                         Math.pow(p1[1]-p0[1],2)); // p0->p1 (c)
+
+	    return Math.acos((p1c*p1c+p0c*p0c-p0p1*p0p1)/(2*p1c*p0c)) * 180 / Math.PI;
+	}
+
+	function getEntropyModelAlphabet(angle)
+	{
+		alphabetModel = {
+			A: [0, 30],
+			B: [30, 60],
+			C: [60, 90],
+			D: [90, 120],
+			E: [120, 150],
+			F: [150, 180],
+			// X: [181, 360],
+		};
+
+		alphabetModel = {
+			A: [0, 60],
+			B: [60, 60],
+			C: [90, 108],
+			D: [108, 120],
+			E: [120, 128],
+			F: [128, 135],
+			G: [135, 140],
+			H: [140, 180],
+			I: [180, 210],
+			J: [210, 240],
+			K: [240, 270],
+			L: [270, 300],
+			M: [300, 330],
+			N: [330, 360]
+		};
+
+		var angleAlphabet = 'X';
+
+		for (i in alphabetModel)
+		{
+			if (angle > alphabetModel[i][0] && angle <= alphabetModel[i][1]) {
+				angleAlphabet = i;
+				break;
+			}
+		}
+
+		return angleAlphabet;
+	}
+
+	function calculateEntropies()
+	{
+		$(strokeGroups).each(function(k, group) {
+			strokeGroups[k]['totalProbability'] = 0;
+
+			var groupEntropy = group.entropy;
+			var alphabetProbabilities = {'total': 0, 'alphabets': {}};
+
+			for (a in alphabetModel)
+			{
+				alphabetProbabilities['alphabets'][a] = {'count': 0, probability: 0};
+			}
+
+			$(groupEntropy).each(function(i, entropyAlphabet) {
+				if (undefined == alphabetProbabilities['alphabets'][entropyAlphabet]) {
+					alphabetProbabilities['alphabets'][entropyAlphabet] = {'count': 0, probability: 0};
+				}
+
+				alphabetProbabilities['alphabets'][entropyAlphabet]['count']++;
+				alphabetProbabilities['total']++;
+			});
+
+			for (j in alphabetProbabilities['alphabets'])
+			{
+				var probability = alphabetProbabilities['alphabets'][j]['count'] / alphabetProbabilities['total'];
+
+				alphabetProbabilities['alphabets'][j]['probability'] = probability;
+
+				if (probability != 0) {
+					// strokeGroups[k]['totalProbability'] += probability * Math.log2(probability);
+
+					strokeGroups[k]['totalProbability'] += probability * Math.log2(1 / probability);
+				}
+			}
+
+			strokeGroups[k].alphabetProbabilities = alphabetProbabilities;
+
+			// strokeGroups[k]['entropyRate'] = (- 1000 * strokeGroups[k]['totalProbability']) / strokeGroups[k]['boundingboxDiagonal'];
+
+			strokeGroups[k]['entropyRate'] = (strokeGroups[k]['totalProbability']) / strokeGroups[k]['boundingboxDiagonal'];
+
+		});
+	}
+
+	function calculateStrokeDensity()
+	{
+		$(strokeGroups).each(function(k, group) {
+			strokeGroups[k].totalPoints = 0;
+			strokeGroups[k].density = 0;
+
+			$(group).each(function(i, strokeId) {
+				stroke = strokes[strokeId];
+				strokeGroups[k].totalPoints += stroke.points.length;
+			});
+
+			var bbLength = distanceBetweenTwoPoints([strokeGroups[k].edges.x[0], strokeGroups[k].edges.y[0]], [strokeGroups[k].edges.x[1], strokeGroups[k].edges.y[0]]); 
+
+
+			strokeGroups[k].density = (strokeGroups[k].totalPoints / bbLength);
+		});
+	}
+
+	function calculateIntersections()
+	{
+		$(strokeGroups).each(function(k, group) {
+			var similarPoints = {};
+			strokeGroups[k].intersections = 0;
+
+			$(group).each(function(i, strokeId) {
+				stroke = strokes[strokeId];
+				$(stroke.points).each(function(j, point) {
+					var coordinate =  point[0] + '-' + point[1];
+
+					if ( ! similarPoints[coordinate]) {
+						similarPoints[coordinate] = 0;
+					}
+
+					similarPoints[coordinate]++;
+				});
+			});
+
+			for (s in similarPoints) {
+				if (similarPoints[s] > 1) {
+					strokeGroups[k].intersections += similarPoints[s];
+				}
+			}
+		});
+	}
+
+	function calculateDiagonalIntersections()
+	{
+		$(strokeGroups).each(function(k, group) {
+			var similarPoints = {};
+			strokeGroups[k].diagonalIntersections = 0;
+
+			$(group).each(function(i, strokeId) {
+				stroke = strokes[strokeId];
+				$(stroke.points).each(function(j, point) {
+					var pointStr = point[0] + '-' + point[1];
+
+					if (strokeGroups[k]['ltrTopDiagonal'].includes(pointStr)) {
+						strokeGroups[k].diagonalIntersections++;
+					}
+
+					if (strokeGroups[k]['ltrBottomDiagonal'].includes(pointStr)) {
+						strokeGroups[k].diagonalIntersections++;
+					}
+				});
+			});
+		});
+	}
+
+    </script>
+    <body onload="init()">
+    	<span style="position:absolute;top:7%;left:1%;">Drawing</span>
+        <canvas id="can" width="400" height="400" style="position:absolute;top:10%;left:1%;border:2px solid;"></canvas>
+
+        <span style="position:absolute;top:7%;left:32%">Text</span>
+        <canvas id="postProcessingText" width="400" height="400" style="position:absolute;top:10%;left:32%;border:2px solid;"></canvas>
+
+        <span style="position:absolute;top:7%;left:72%;">Shapes</span>
+        <canvas id="postProcessingShapes" width="400" height="400" style="position:absolute;top:10%;left:72%;border:2px solid;"></canvas>
+
+        <img id="canvasimg" style="position:absolute;top:10%;left:52%;" style="display:none;">
+        <input type="button" value="save" id="btn" size="30" onclick="save()">
+        <input type="button" value="clear" id="clr" size="23" onclick="erase()">
+        <input type="button" value="classify" onclick="classify()">
+        <span id="classifyingText" style="display: none">Classifying...</span>
+    </body>
+    </html>
